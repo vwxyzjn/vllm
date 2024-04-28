@@ -4,6 +4,7 @@ from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.engine.llm_engine import LLMEngine
 from vllm.entrypoints.llm import LLM
+from vllm.entrypoints.single_gpu_vllm import SingleGPULLM
 from vllm.executor.ray_utils import initialize_ray_cluster
 from vllm.model_executor.models import ModelRegistry
 from vllm.outputs import CompletionOutput, RequestOutput
@@ -18,6 +19,7 @@ __all__ = [
     "RequestOutput",
     "CompletionOutput",
     "LLMEngine",
+    "SingleGPULLM",
     "EngineArgs",
     "AsyncLLMEngine",
     "AsyncEngineArgs",
