@@ -19,8 +19,11 @@ from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Counter, CudaMemoryProfiler
 from vllm.worker.cache_engine import CacheEngine
-from vllm.worker.model_runner import BatchType, ModelRunner
-from vllm.worker.worker import Worker
+from vllm.worker.model_runner import (BatchType, ModelRunner,
+                                      _prepare_fake_inputs, LORA_WARMUP_RANK)
+from vllm.worker.worker import Worker, raise_if_cache_size_invalid
+from vllm.sampling_params import SamplingParams
+import gc
 
 
 class SingleGPUModelRunner(ModelRunner):
@@ -41,6 +44,7 @@ class SingleGPUModelRunner(ModelRunner):
         self.model_memory_usage = m.consumed_memory
         print(f"Loading model weights took "
               f"{self.model_memory_usage / float(2**30):.4f} GB")
+        print("haha")
 
     def prepare_input_tensors(
         self,
@@ -156,10 +160,77 @@ class SingleGPUModelRunner(ModelRunner):
             decode_metadata=decode_attn_metadata,
             kv_cache_dtype=self.kv_cache_dtype,
         )
-
         return (input_tokens, input_positions, attn_metadata,
                 sampling_metadata, lora_requests, lora_mapping,
                 multi_modal_input)
+
+    @torch.inference_mode()
+    def profile_run(self) -> None:
+        """costa: set `torch.cuda.synchronize(self.device_config.device)`"""
+        # Enable top-k sampling to reflect the accurate memory usage.
+        sampling_params = SamplingParams(top_p=0.99, top_k=self.vocab_size - 1)
+        max_num_batched_tokens = self.scheduler_config.max_num_batched_tokens
+        max_num_seqs = self.scheduler_config.max_num_seqs
+
+        # This represents the maximum number of different requests
+        # that will have unique loras, an therefore the max amount of memory
+        # consumption create dummy lora request copies from the lora request
+        # passed in, which contains a lora from the lora warmup path.
+        dummy_lora_requests = []
+        dummy_lora_requests_per_seq = []
+        if self.lora_config:
+            for idx in range(self.lora_config.max_loras):
+                lora_id = idx + 1
+                dummy_lora_request = LoRARequest(
+                    lora_name=f"warmup_{lora_id}",
+                    lora_int_id=lora_id,
+                    lora_local_path="/not/a/real/path",
+                )
+                self.lora_manager.add_dummy_lora(dummy_lora_request,
+                                                 rank=LORA_WARMUP_RANK)
+                dummy_lora_requests.append(dummy_lora_request)
+            dummy_lora_requests_per_seq = [
+                dummy_lora_requests[idx % len(dummy_lora_requests)]
+                for idx in range(max_num_seqs)
+            ]
+
+        # Profile memory usage with max_num_sequences sequences and the total
+        # number of tokens equal to max_num_batched_tokens.
+        seqs: List[SequenceGroupMetadata] = []
+        # Additional GPU memory may be needed for vision encoding, which needs
+        # to be accounted for when calculating the GPU blocks for
+        # vLLM blocker manager.
+        # To exercise the worst scenario for GPU memory consumption,
+        # the number of seqs (batch_size) is chosen to maximize the number
+        # of images processed.
+        if self.vision_language_config:
+            max_num_seqs = min(
+                max_num_seqs,
+                int(max_num_batched_tokens /
+                    self.vision_language_config.image_feature_size))
+        for group_id in range(max_num_seqs):
+            seq_len = (max_num_batched_tokens // max_num_seqs +
+                       (group_id < max_num_batched_tokens % max_num_seqs))
+            seq_data, fake_multi_modal_input = _prepare_fake_inputs(
+                seq_len, self.vision_language_config)
+            seq = SequenceGroupMetadata(
+                request_id=str(group_id),
+                is_prompt=True,
+                seq_data={group_id: seq_data},
+                sampling_params=sampling_params,
+                block_tables=None,
+                lora_request=dummy_lora_requests_per_seq[group_id]
+                if dummy_lora_requests_per_seq else None,
+                multi_modal_data=fake_multi_modal_input,
+            )
+            seqs.append(seq)
+
+        # Run the model with the dummy inputs.
+        num_layers = self.model_config.get_num_layers(self.parallel_config)
+        kv_caches = [None] * num_layers
+        self.execute_model(seqs, kv_caches)
+        torch.cuda.synchronize(self.device_config.device)
+        return
 
 
 class SingleGPUWorker(Worker):
@@ -231,15 +302,39 @@ class SingleGPUWorker(Worker):
             # This env var set by Ray causes exceptions with graph building.
             os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
             self.device = torch.device(f"cuda:{self.local_rank}")
-            torch.cuda.set_device(self.device)
+            # torch.cuda.set_device(self.device)
 
             torch.cuda.empty_cache()
-            self.init_gpu_memory = torch.cuda.mem_get_info()[0]
+            self.init_gpu_memory = torch.cuda.mem_get_info(self.device)[0]
         else:
             raise RuntimeError(
                 f"Not support device type: {self.device_config.device}")
         # Set random seed.
         set_random_seed(self.model_config.seed)
+
+    def _init_cache_engine(self):
+        assert self.cache_config.num_gpu_blocks is not None
+        self.cache_engine = CacheEngine(self.cache_config, self.model_config,
+                                        self.parallel_config,
+                                        self.device_config)
+        self.gpu_cache = self.cache_engine.gpu_cache
+        self.model_runner.set_block_size(self.cache_engine.block_size)
+
+    def initialize_cache(self, num_gpu_blocks: int,
+                         num_cpu_blocks: int) -> None:
+        """Allocate GPU and CPU KV cache with the specified number of blocks.
+
+        This also warms up the model, which may record CUDA graphs.
+        """
+        raise_if_cache_size_invalid(num_gpu_blocks,
+                                    self.cache_config.block_size,
+                                    self.model_config.max_model_len)
+
+        self.cache_config.num_gpu_blocks = num_gpu_blocks
+        self.cache_config.num_cpu_blocks = num_cpu_blocks
+        with torch.cuda.device(self.device_config.device):
+            self._init_cache_engine()
+            self._warm_up_model()
 
     @torch.inference_mode()
     def execute_model(
@@ -278,6 +373,42 @@ class SingleGPUWorker(Worker):
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
         return [output]
+
+    @torch.inference_mode()
+    def determine_num_available_blocks(self) -> Tuple[int, int]:
+        """set `torch.cuda.synchronize(self.device_config.device)`"""
+        # Profile the memory usage of the model and get the maximum number of
+        # cache blocks that can be allocated with the remaining free memory.
+        torch.cuda.empty_cache()
+
+        # Execute a forward pass with dummy inputs to profile the memory usage
+        # of the model.
+        self.model_runner.profile_run()
+
+        # Calculate the number of blocks that can be allocated with the
+        # profiled peak memory.
+        torch.cuda.synchronize(device=self.device_config.device)
+        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info(
+            self.device_config.device)
+        # NOTE(woosuk): Here we assume that the other processes using the same
+        # GPU did not change their memory usage during the profiling.
+        peak_memory = self.init_gpu_memory - free_gpu_memory
+        assert peak_memory > 0, (
+            "Error in memory profiling. This happens when the GPU memory was "
+            "not properly cleaned up before initializing the vLLM instance.")
+        cache_block_size = self.get_cache_block_size_bytes()
+        num_gpu_blocks = int(
+            (total_gpu_memory * self.cache_config.gpu_memory_utilization -
+             peak_memory) // cache_block_size)
+        num_cpu_blocks = int(self.cache_config.swap_space_bytes //
+                             cache_block_size)
+        num_gpu_blocks = max(num_gpu_blocks, 0)
+        num_cpu_blocks = max(num_cpu_blocks, 0)
+        if self.model_runner.lora_manager:
+            self.model_runner.remove_all_loras()
+        gc.collect()
+        torch.cuda.empty_cache()
+        return num_gpu_blocks, num_cpu_blocks
 
 
 class SingleGPUGPUExecutor(GPUExecutor):

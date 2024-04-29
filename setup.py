@@ -381,7 +381,7 @@ if os.environ.get("VLLM_USE_PRECOMPILED"):
     package_data["vllm"].append("*.so")
 
 setup(
-    name="vllm",
+    name="vllm-online",
     version=get_vllm_version(),
     author="vLLM Team",
     license="Apache 2.0",
