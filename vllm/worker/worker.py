@@ -102,7 +102,8 @@ class Worker(WorkerBase):
 
             _check_if_gpu_supports_dtype(self.model_config.dtype)
             torch.cuda.empty_cache()
-            self.init_gpu_memory = torch.cuda.mem_get_info()[0]
+            self.init_gpu_memory = torch.cuda.mem_get_info(
+                self.device_config.device)[0]
         else:
             raise RuntimeError(
                 f"Not support device type: {self.device_config.device}")
@@ -140,7 +141,8 @@ class Worker(WorkerBase):
         # Calculate the number of blocks that can be allocated with the
         # profiled peak memory.
         torch.cuda.synchronize()
-        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info(
+            self.device_config.device)
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
         peak_memory = self.init_gpu_memory - free_gpu_memory
@@ -181,7 +183,8 @@ class Worker(WorkerBase):
     def _init_cache_engine(self):
         assert self.cache_config.num_gpu_blocks is not None
         self.cache_engine = CacheEngine(self.cache_config, self.model_config,
-                                        self.parallel_config)
+                                        self.parallel_config,
+                                        self.device_config)
         self.gpu_cache = self.cache_engine.gpu_cache
         self.model_runner.set_block_size(self.cache_engine.block_size)
 

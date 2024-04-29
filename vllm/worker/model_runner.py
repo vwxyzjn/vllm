@@ -157,7 +157,7 @@ class ModelRunner:
         self.graph_block_tables: torch.Tensor  # Set after initial profiling.
 
     def load_model(self) -> None:
-        with CudaMemoryProfiler() as m:
+        with CudaMemoryProfiler(device=self.device_config.device) as m:
             self.model = get_model(
                 model_config=self.model_config,
                 device_config=self.device_config,
@@ -882,12 +882,17 @@ class ModelRunner:
 
         # Prepare dummy inputs. These will be reused for all batch sizes.
         max_batch_size = max(_BATCH_SIZES_TO_CAPTURE)
-        input_tokens = torch.zeros(max_batch_size, dtype=torch.long).cuda()
-        input_positions = torch.zeros(max_batch_size, dtype=torch.long).cuda()
-        slot_mapping = torch.empty(max_batch_size, dtype=torch.long).cuda()
+        input_tokens = torch.zeros(max_batch_size,
+                                   dtype=torch.long).to(self.device)
+        input_positions = torch.zeros(max_batch_size,
+                                      dtype=torch.long).to(self.device)
+        slot_mapping = torch.empty(max_batch_size,
+                                   dtype=torch.long).to(self.device)
         slot_mapping.fill_(_PAD_SLOT_ID)
-        context_lens = torch.ones(max_batch_size, dtype=torch.int32).cuda()
-        block_tables = torch.from_numpy(self.graph_block_tables).cuda()
+        context_lens = torch.ones(max_batch_size,
+                                  dtype=torch.int32).to(self.device)
+        block_tables = torch.from_numpy(self.graph_block_tables).to(
+            self.device)
 
         graph_batch_size = _get_graph_batch_size(
             self.scheduler_config.max_num_seqs)
