@@ -6,22 +6,33 @@ from vllm.engine.llm_engine import LLMEngine
 from vllm.entrypoints.llm import LLM
 from vllm.entrypoints.single_gpu_vllm import SingleGPULLM
 from vllm.executor.ray_utils import initialize_ray_cluster
+from vllm.inputs import PromptInputs, TextPrompt, TokensPrompt
 from vllm.model_executor.models import ModelRegistry
-from vllm.outputs import CompletionOutput, RequestOutput
+from vllm.outputs import (CompletionOutput, EmbeddingOutput,
+                          EmbeddingRequestOutput, RequestOutput)
+from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 
-__version__ = "0.4.2"
+from .version import __commit__, __version__
 
 __all__ = [
+    "__commit__",
+    "__version__",
     "LLM",
     "ModelRegistry",
+    "PromptInputs",
+    "TextPrompt",
+    "TokensPrompt",
     "SamplingParams",
     "RequestOutput",
     "CompletionOutput",
+    "EmbeddingOutput",
+    "EmbeddingRequestOutput",
     "LLMEngine",
     "SingleGPULLM",
     "EngineArgs",
     "AsyncLLMEngine",
     "AsyncEngineArgs",
     "initialize_ray_cluster",
+    "PoolingParams",
 ]

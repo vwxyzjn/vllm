@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
-                         ModelConfig, ParallelConfig, SchedulerConfig,
-                         SpeculativeConfig, VisionLanguageConfig)
+                         ModelConfig, MultiModalConfig, ObservabilityConfig,
+                         ParallelConfig, PromptAdapterConfig, SchedulerConfig,
+                         SpeculativeConfig)
 from vllm.lora.request import LoRARequest
-from vllm.sequence import SamplerOutput, SequenceGroupMetadata
+from vllm.prompt_adapter.request import PromptAdapterRequest
+from vllm.sequence import ExecuteModelRequest, SamplerOutput
 
 
 class ExecutorBase(ABC):
@@ -16,6 +18,8 @@ class ExecutorBase(ABC):
     that can execute the model on multiple devices.
     """
 
+    uses_ray: bool  # whether the executor uses Ray for orchestration.
+
     def __init__(
         self,
         model_config: ModelConfig,
@@ -25,8 +29,10 @@ class ExecutorBase(ABC):
         device_config: DeviceConfig,
         load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
-        vision_language_config: Optional[VisionLanguageConfig],
+        multimodal_config: Optional[MultiModalConfig],
         speculative_config: Optional[SpeculativeConfig],
+        prompt_adapter_config: Optional[PromptAdapterConfig],
+        observability_config: Optional[ObservabilityConfig],
     ) -> None:
         self.model_config = model_config
         self.cache_config = cache_config
@@ -35,9 +41,10 @@ class ExecutorBase(ABC):
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
         self.device_config = device_config
-        self.vision_language_config = vision_language_config
+        self.multimodal_config = multimodal_config
         self.speculative_config = speculative_config
-
+        self.prompt_adapter_config = prompt_adapter_config
+        self.observability_config = observability_config
         self._init_executor()
 
     @abstractmethod
@@ -68,14 +75,15 @@ class ExecutorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def execute_model(self,
-                      seq_group_metadata_list: List[SequenceGroupMetadata],
-                      blocks_to_swap_in: Dict[int, int],
-                      blocks_to_swap_out: Dict[int, int],
-                      blocks_to_copy: Dict[int, List[int]],
-                      num_lookahead_slots: int) -> List[SamplerOutput]:
+    def execute_model(
+        self, execute_model_req: ExecuteModelRequest
+    ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences."""
         raise NotImplementedError
+
+    def stop_remote_worker_execution_loop(self) -> None:
+        """Releases parallel workers from model loop."""
+        return
 
     @abstractmethod
     def add_lora(self, lora_request: LoRARequest) -> bool:
@@ -86,7 +94,28 @@ class ExecutorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def pin_lora(self, lora_id: int) -> bool:
+        raise NotImplementedError  # type: ignore
+
+    @abstractmethod
     def list_loras(self) -> Set[int]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_prompt_adapter(
+            self, prompt_adapter_request: PromptAdapterRequest) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def remove_prompt_adapter(self, prompt_adapter_id: int) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def pin_prompt_adapter(self, prompt_adapter_id: int) -> bool:
+        raise NotImplementedError  # type: ignore
+
+    @abstractmethod
+    def list_prompt_adapters(self) -> Set[int]:
         raise NotImplementedError
 
     @abstractmethod
@@ -107,14 +136,14 @@ class ExecutorAsyncBase(ExecutorBase):
 
     @abstractmethod
     async def execute_model_async(
-        self,
-        seq_group_metadata_list: List[SequenceGroupMetadata],
-        blocks_to_swap_in: Dict[int, int],
-        blocks_to_swap_out: Dict[int, int],
-        blocks_to_copy: Dict[int, List[int]],
-    ) -> SamplerOutput:
+            self,
+            execute_model_req: ExecuteModelRequest) -> List[SamplerOutput]:
         """Executes one model step on the given sequences."""
         raise NotImplementedError
+
+    async def stop_remote_worker_execution_loop_async(self) -> None:
+        """Releases parallel workers from model loop."""
+        return
 
     async def check_health_async(self) -> None:
         """Checks if the executor is healthy. If not, it should raise an

@@ -24,6 +24,7 @@ from torch import nn
 from transformers import BloomConfig
 
 from vllm.attention import Attention, AttentionMetadata
+from vllm.config import CacheConfig
 from vllm.distributed import (get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size)
 from vllm.model_executor.layers.activation import get_act_fn
@@ -38,7 +39,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.sampling_metadata import SamplingMetadata
-from vllm.sequence import SamplerOutput
+from vllm.sequence import IntermediateTensors, SamplerOutput
 
 
 def _get_alibi_slopes(total_num_heads: int) -> torch.Tensor:
@@ -71,6 +72,7 @@ class BloomAttention(nn.Module):
     def __init__(
         self,
         config: BloomConfig,
+        cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
     ):
         super().__init__()
@@ -108,7 +110,9 @@ class BloomAttention(nn.Module):
         self.attn = Attention(self.num_heads,
                               self.head_dim,
                               scaling,
-                              alibi_slopes=alibi_slopes)
+                              alibi_slopes=alibi_slopes,
+                              cache_config=cache_config,
+                              quant_config=quant_config)
 
     def forward(
         self,
@@ -139,7 +143,6 @@ class BloomMLP(nn.Module):
             4 * hidden_size,
             quant_config=quant_config,
         )
-        quant_config = getattr(quant_config, "quant_config", None)
         self.gelu_impl = get_act_fn("gelu", quant_config, 4 * hidden_size)
         self.dense_4h_to_h = RowParallelLinear(
             4 * hidden_size,
@@ -159,6 +162,7 @@ class BloomBlock(nn.Module):
     def __init__(
         self,
         config: BloomConfig,
+        cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
     ):
         super().__init__()
@@ -166,7 +170,8 @@ class BloomBlock(nn.Module):
 
         self.input_layernorm = nn.LayerNorm(hidden_size,
                                             eps=config.layer_norm_epsilon)
-        self.self_attention = BloomAttention(config, quant_config)
+        self.self_attention = BloomAttention(config, cache_config,
+                                             quant_config)
         self.post_attention_layernorm = nn.LayerNorm(
             hidden_size, eps=config.layer_norm_epsilon)
         self.mlp = BloomMLP(config, quant_config)
@@ -215,6 +220,7 @@ class BloomModel(nn.Module):
     def __init__(
         self,
         config: BloomConfig,
+        cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
     ):
         super().__init__()
@@ -230,7 +236,7 @@ class BloomModel(nn.Module):
 
         # Transformer blocks
         self.h = nn.ModuleList([
-            BloomBlock(config, quant_config)
+            BloomBlock(config, cache_config, quant_config)
             for _ in range(config.num_hidden_layers)
         ])
 
@@ -263,13 +269,14 @@ class BloomForCausalLM(nn.Module):
     def __init__(
         self,
         config: BloomConfig,
+        cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
     ):
         super().__init__()
         self.config = config
         self.quant_config = quant_config
-        self.transformer = BloomModel(config, quant_config)
-        self.lm_head_weight = self.transformer.word_embeddings.weight
+        self.transformer = BloomModel(config, cache_config, quant_config)
+        self.lm_head = self.transformer.word_embeddings
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
 
@@ -279,14 +286,18 @@ class BloomForCausalLM(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
+        intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> torch.Tensor:
         hidden_states = self.transformer(input_ids, positions, kv_caches,
                                          attn_metadata)
         return hidden_states
 
-    def compute_logits(self, hidden_states: torch.Tensor,
-                       sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        logits = self.logits_processor(self.lm_head_weight, hidden_states,
+    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+    ) -> Optional[torch.Tensor]:
+        logits = self.logits_processor(self.lm_head, hidden_states,
                                        sampling_metadata)
         return logits
 
