@@ -51,7 +51,7 @@ class GPUExecutor(ExecutorBase):
             device_config=self.device_config,
             cache_config=self.cache_config,
             load_config=self.load_config,
-            local_rank=local_rank,
+            local_rank=self.device_config.device.index,
             rank=rank,
             distributed_init_method=distributed_init_method,
             lora_config=self.lora_config,
