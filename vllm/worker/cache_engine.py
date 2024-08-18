@@ -64,7 +64,7 @@ class CacheEngine:
 
         # Initialize the cache.
         self.gpu_cache = self._allocate_kv_cache(
-            self.num_gpu_blocks, self.device_config.device)
+            self.num_gpu_blocks, self.device_config.device_type)
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
 
     def _allocate_kv_cache(
