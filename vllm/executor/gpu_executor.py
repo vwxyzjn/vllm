@@ -31,7 +31,7 @@ class GPUExecutor(ExecutorBase):
         assert self.parallel_config.world_size == 1, (
             "GPUExecutor only supports single GPU.")
 
-        self.driver_worker = self._create_worker()
+        self.driver_worker = self._create_worker(local_rank=self.device_config.device.index)
         self.driver_worker.init_device()
         self.driver_worker.load_model()
 
