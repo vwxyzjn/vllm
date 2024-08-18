@@ -219,7 +219,7 @@ class GroupCoordinator:
     def graph_capture(
             self, graph_capture_context: Optional[GraphCaptureContext] = None):
         if graph_capture_context is None:
-            stream = torch.cuda.Stream()
+            stream = torch.cuda.Stream(self.device)
             graph_capture_context = GraphCaptureContext(stream)
         else:
             stream = graph_capture_context.stream
@@ -905,6 +905,7 @@ def initialize_model_parallel(
     # Get world size and rank. Ensure some consistencies.
     assert torch.distributed.is_initialized()
     world_size: int = torch.distributed.get_world_size()
+    # world_size: int = 1
     backend = backend or torch.distributed.get_backend(
         get_world_group().device_group)
 

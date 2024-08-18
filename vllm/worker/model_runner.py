@@ -888,7 +888,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
     def load_model(self) -> None:
         logger.info("Starting to load model %s...", self.model_config.model)
-        with CudaMemoryProfiler() as m:
+        with CudaMemoryProfiler(self.device) as m:
             self.model = get_model(model_config=self.model_config,
                                    device_config=self.device_config,
                                    load_config=self.load_config,
@@ -1206,12 +1206,12 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
         # Prepare dummy inputs. These will be reused for all batch sizes.
         max_batch_size = max(_BATCH_SIZES_TO_CAPTURE)
-        input_tokens = torch.zeros(max_batch_size, dtype=torch.long).cuda()
-        input_positions = torch.zeros(max_batch_size, dtype=torch.long).cuda()
-        slot_mapping = torch.empty(max_batch_size, dtype=torch.long).cuda()
+        input_tokens = torch.zeros(max_batch_size, dtype=torch.long, device=self.device)
+        input_positions = torch.zeros(max_batch_size, dtype=torch.long, device=self.device)
+        slot_mapping = torch.empty(max_batch_size, dtype=torch.long, device=self.device)
         slot_mapping.fill_(_PAD_SLOT_ID)
-        seq_lens = torch.ones(max_batch_size, dtype=torch.int32).cuda()
-        block_tables = torch.from_numpy(self.graph_block_tables).cuda()
+        seq_lens = torch.ones(max_batch_size, dtype=torch.int32, device=self.device)
+        block_tables = torch.from_numpy(self.graph_block_tables).to(self.device)
         intermediate_inputs = None
         if not get_pp_group().is_first_rank:
             intermediate_inputs = self.model.make_empty_intermediate_tensors(
@@ -1669,6 +1669,7 @@ class CUDAGraphRunner:
         torch.cuda.synchronize()
 
         # Capture the graph.
+        # breakpoint()
         self._graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self._graph, pool=memory_pool, stream=stream):
             output_hidden_or_intermediate_states = self.model(
