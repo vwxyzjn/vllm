@@ -27,6 +27,8 @@ docker run --rm -v "$(pwd)/wheels:/host-wheels" vllm-nightly-2 bash -c "
     echo 'Copying FlashInfer wheels...' && \
     cp -v /vllm-workspace/flashinfer-dist/*.whl /host-wheels/ 2>/dev/null || echo 'No FlashInfer wheels found' && \
     echo 'Wheel extraction completed!' && \
+    cp -v /vllm-workspace/torch_build_versions.txt /host-wheels/ 2>/dev/null || echo 'No torch_build_versions.txt found' && \
+    echo 'torch_build_versions.txt copied to host!' && \
     echo 'Available wheels in container:' && \
     find /vllm-workspace -name '*.whl' -type f 2>/dev/null || echo 'No wheels found' && \
     echo 'Wheels copied to host:' && \
